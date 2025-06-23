@@ -180,6 +180,71 @@ namespace Supercluster.KDTree
         /// <param name="points">The set of points remaining to be added to the kd-tree</param>
         /// <param name="nodes">The set of nodes RE</param>
         private void GenerateTree(
+    int index,
+    int dim,
+    IReadOnlyCollection<TDimension[]> points,
+    IEnumerable<TNode> nodes)
+{
+    int count = points.Count;
+    if (count == 0) return;
+
+    // zip both lists so we can sort nodes according to points
+    var zippedList = points.Zip(nodes, (p, n) => new { Point = p, Node = n })
+                           .OrderBy(z => z.Point[dim])
+                           .ToArray();
+
+    // get the point which has the median value of the current dimension
+    int medianIdx = zippedList.Length / 2;
+    var medianPoint = zippedList[medianIdx];
+
+    // assign median to current node
+    this.InternalPointArray[index] = medianPoint.Point;
+    this.InternalNodeArray[index] = medianPoint.Node;
+
+    // split into left and right subsets
+    var leftArr  = zippedList.Take(medianIdx).ToArray();
+    var rightArr = zippedList.Skip(medianIdx + 1).ToArray();
+
+    int nextDim = (dim + 1) % this.Dimensions;
+    int leftIndex = LeftChildIndex(index);
+    int rightIndex = RightChildIndex(index);
+
+    bool leftBig  = leftArr.Length  > parallelThreshold;
+    bool rightBig = rightArr.Length > parallelThreshold;
+
+    if (leftBig && rightBig)
+    {
+        // Parallel generation when both subarrays are large
+        Parallel.Invoke(
+            () => GenerateTree(
+                leftIndex,
+                nextDim,
+                leftArr.Select(z => z.Point),
+                leftArr.Select(z => z.Node)),
+            () => GenerateTree(
+                rightIndex,
+                nextDim,
+                rightArr.Select(z => z.Point),
+                rightArr.Select(z => z.Node))
+        );
+    }
+    else
+    {
+        if (leftArr.Length > 0)
+            GenerateTree(leftIndex, nextDim,
+                         leftArr.Select(z => z.Point),
+                         leftArr.Select(z => z.Node));
+        if (rightArr.Length > 0)
+            GenerateTree(rightIndex, nextDim,
+                         rightArr.Select(z => z.Point),
+                         rightArr.Select(z => z.Node));
+    }
+
+    // 内存优化：释放临时 sub-array 引用，提示垃圾回收
+    // （可选 GC.Collect，但一般由 GC 自动回收）
+    // leftArr = null; rightArr = null; zippedList = null;
+}
+        private void GenerateTree(
             int index,
             int dim,
             IReadOnlyCollection<TDimension[]> points,
