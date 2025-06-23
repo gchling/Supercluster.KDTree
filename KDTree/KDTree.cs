@@ -180,6 +180,76 @@ namespace Supercluster.KDTree
         /// <param name="points">The set of points remaining to be added to the kd-tree</param>
         /// <param name="nodes">The set of nodes RE</param>
         private void GenerateTree(
+    int index,
+    int dim,
+    IReadOnlyCollection<TDimension[]> points,
+    IEnumerable<TNode> nodes)
+{
+    // if no points, nothing to build
+    int count = points.Count;
+    if (count == 0) return;
+
+    // zip both lists so we can sort nodes according to points
+    var zippedList = points.Zip(nodes, (p, n) => new { Point = p, Node = n })
+                            .OrderBy(z => z.Point[dim])
+                            .ToArray();
+
+    // get median for current dimension
+    int medianIdx = zippedList.Length / 2;
+    var median = zippedList[medianIdx];
+
+    // assign median to current node slot
+    this.InternalPointArray[index] = median.Point;
+    this.InternalNodeArray[index] = median.Node;
+
+    // split into left and right subsets
+    var leftArr = zippedList.Take(medianIdx).ToArray();
+    var rightArr = zippedList.Skip(medianIdx + 1).ToArray();
+
+    // determine child indices
+    int leftIndex = LeftChildIndex(index);
+    int rightIndex = RightChildIndex(index);
+
+    int nextDim = (dim + 1) % this.Dimensions;
+
+    // define threshold to decide parallel or sequential build
+    bool leftBig = leftArr.Length > parallelThreshold;
+    bool rightBig = rightArr.Length > parallelThreshold;
+
+    if (leftBig && rightBig)
+    {
+        // parallel build when both children are large
+        var taskL = Task.Run(() =>
+            GenerateTree(leftIndex, nextDim,
+                         leftArr.Select(z => z.Point).ToList(),
+                         leftArr.Select(z => z.Node)));
+
+        var taskR = Task.Run(() =>
+            GenerateTree(rightIndex, nextDim,
+                         rightArr.Select(z => z.Point).ToList(),
+                         rightArr.Select(z => z.Node)));
+
+        Task.WaitAll(taskL, taskR);
+    }
+    else
+    {
+        // sequential build otherwise
+        if (leftArr.Length > 0)
+        {
+            GenerateTree(leftIndex, nextDim,
+                         leftArr.Select(z => z.Point).ToList(),
+                         leftArr.Select(z => z.Node));
+        }
+        if (rightArr.Length > 0)
+        {
+            GenerateTree(rightIndex, nextDim,
+                         rightArr.Select(z => z.Point).ToList(),
+                         rightArr.Select(z => z.Node));
+        }
+    }
+}
+
+        /*private void GenerateTree(
             int index,
             int dim,
             IReadOnlyCollection<TDimension[]> points,
@@ -254,7 +324,7 @@ namespace Supercluster.KDTree
             {
                 this.GenerateTree(RightChildIndex(index), nextDim, rightPoints, rightNodes);
             }
-        }
+        }*/
 
         /// <summary>
         /// A top-down recursive method to find the nearest neighbors of a given point.
