@@ -180,81 +180,70 @@ namespace Supercluster.KDTree
         /// <param name="points">The set of points remaining to be added to the kd-tree</param>
         /// <param name="nodes">The set of nodes RE</param>
         private void GenerateTree(
-            int index,
-            int dim,
-            IReadOnlyCollection<TDimension[]> points,
-            IEnumerable<TNode> nodes)
-        {
-            // See wikipedia for a good explanation kd-tree construction.
-            // https://en.wikipedia.org/wiki/K-d_tree
+    int index,
+    int dim,
+    IReadOnlyCollection<TDimension[]> points,
+    IEnumerable<TNode> nodes)
+{
+    int count = points.Count;
+    if (count == 0) return;
 
-            // zip both lists so we can sort nodes according to points
-            var zippedList = points.Zip(nodes, (p, n) => new { Point = p, Node = n });
+    // zip both lists so we can sort nodes according to points
+    var zippedList = points.Zip(nodes, (p, n) => new { Point = p, Node = n })
+                           .OrderBy(z => z.Point[dim])
+                           .ToArray();
 
-            // sort the points along the current dimension
-            var sortedPoints = zippedList.OrderBy(z => z.Point[dim]).ToArray();
+    // get the point which has the median value of the current dimension
+    int medianIdx = zippedList.Length / 2;
+    var medianPoint = zippedList[medianIdx];
 
-            // get the point which has the median value of the current dimension.
-            var medianPoint = sortedPoints[points.Count / 2];
-            var medianPointIdx = sortedPoints.Length / 2;
+    // assign median to current node
+    this.InternalPointArray[index] = medianPoint.Point;
+    this.InternalNodeArray[index] = medianPoint.Node;
 
-            // The point with the median value all the current dimension now becomes the value of the current tree node
-            // The previous node becomes the parents of the current node.
-            this.InternalPointArray[index] = medianPoint.Point;
-            this.InternalNodeArray[index] = medianPoint.Node;
+    // split into left and right subsets
+    var leftArr  = zippedList.Take(medianIdx).ToArray();
+    var rightArr = zippedList.Skip(medianIdx + 1).ToArray();
 
-            // We now split the sorted points into 2 groups
-            // 1st group: points before the median
-            var leftPoints = new TDimension[medianPointIdx][];
-            var leftNodes = new TNode[medianPointIdx];
-            Array.Copy(sortedPoints.Select(z => z.Point).ToArray(), leftPoints, leftPoints.Length);
-            Array.Copy(sortedPoints.Select(z => z.Node).ToArray(), leftNodes, leftNodes.Length);
+    int nextDim = (dim + 1) % this.Dimensions;
+    int leftIndex = LeftChildIndex(index);
+    int rightIndex = RightChildIndex(index);
 
-            // 2nd group: Points after the median
-            var rightPoints = new TDimension[sortedPoints.Length - (medianPointIdx + 1)][];
-            var rightNodes = new TNode[sortedPoints.Length - (medianPointIdx + 1)];
-            Array.Copy(
-                sortedPoints.Select(z => z.Point).ToArray(),
-                medianPointIdx + 1,
-                rightPoints,
-                0,
-                rightPoints.Length);
-            Array.Copy(sortedPoints.Select(z => z.Node).ToArray(), medianPointIdx + 1, rightNodes, 0, rightNodes.Length);
+    bool leftBig  = leftArr.Length  > parallelThreshold;
+    bool rightBig = rightArr.Length > parallelThreshold;
 
-            // We new recurse, passing the left and right arrays for arguments.
-            // The current node's left and right values become the "roots" for
-            // each recursion call. We also forward cycle to the next dimension.
-            var nextDim = (dim + 1) % this.Dimensions; // select next dimension
+    if (leftBig && rightBig)
+    {
+        // Parallel generation when both subarrays are large
+        Parallel.Invoke(
+            () => GenerateTree(
+                leftIndex,
+                nextDim,
+                leftArr.Select(z => z.Point),
+                leftArr.Select(z => z.Node)),
+            () => GenerateTree(
+                rightIndex,
+                nextDim,
+                rightArr.Select(z => z.Point),
+                rightArr.Select(z => z.Node))
+        );
+    }
+    else
+    {
+        if (leftArr.Length > 0)
+            GenerateTree(leftIndex, nextDim,
+                         leftArr.Select(z => z.Point),
+                         leftArr.Select(z => z.Node));
+        if (rightArr.Length > 0)
+            GenerateTree(rightIndex, nextDim,
+                         rightArr.Select(z => z.Point),
+                         rightArr.Select(z => z.Node));
+    }
 
-            // We only need to recurse if the point array contains more than one point
-            // If the array has no points then the node stay a null value
-            if (leftPoints.Length <= 1)
-            {
-                if (leftPoints.Length == 1)
-                {
-                    this.InternalPointArray[LeftChildIndex(index)] = leftPoints[0];
-                    this.InternalNodeArray[LeftChildIndex(index)] = leftNodes[0];
-                }
-            }
-            else
-            {
-                this.GenerateTree(LeftChildIndex(index), nextDim, leftPoints, leftNodes);
-            }
-
-            // Do the same for the right points
-            if (rightPoints.Length <= 1)
-            {
-                if (rightPoints.Length == 1)
-                {
-                    this.InternalPointArray[RightChildIndex(index)] = rightPoints[0];
-                    this.InternalNodeArray[RightChildIndex(index)] = rightNodes[0];
-                }
-            }
-            else
-            {
-                this.GenerateTree(RightChildIndex(index), nextDim, rightPoints, rightNodes);
-            }
-        }
+    // 内存优化：释放临时 sub-array 引用，提示垃圾回收
+    // （可选 GC.Collect，但一般由 GC 自动回收）
+    // leftArr = null; rightArr = null; zippedList = null;
+}
 
         /// <summary>
         /// A top-down recursive method to find the nearest neighbors of a given point.
